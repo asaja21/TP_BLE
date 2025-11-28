@@ -38,6 +38,10 @@ import androidx.core.view.WindowInsetsCompat;
 import java.util.ArrayList;
 import java.util.List;
 
+import android.bluetooth.BluetoothGatt;
+import android.bluetooth.BluetoothGattCallback;
+import android.bluetooth.BluetoothProfile;
+
 public class MainActivity extends AppCompatActivity {
 
     private static final int REQUEST_ENABLE_BT = 1;
@@ -49,6 +53,8 @@ public class MainActivity extends AppCompatActivity {
     // Attributs pour la liste des appareils
     private ArrayList<String> discoveredDevicesList;
     private ArrayAdapter<String> listAdapter;
+
+    private BluetoothGatt bluetoothGatt;
 
     // Attributs pour le scan BLE
     private BluetoothLeScanner bluetoothLeScanner;
