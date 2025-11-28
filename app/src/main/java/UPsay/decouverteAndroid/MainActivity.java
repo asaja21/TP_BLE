@@ -91,20 +91,36 @@ public class MainActivity extends AppCompatActivity {
         listAdapter = new ArrayAdapter<>(this, android.R.layout.simple_list_item_1, discoveredDevicesList);
         devicesListView.setAdapter(listAdapter);
 
-        // Ajout du listener pour les clics sur les items de la liste
+
+// Ajout du listener pour les clics sur les items de la liste
         devicesListView.setOnItemClickListener(new AdapterView.OnItemClickListener() {
             @Override
             public void onItemClick(AdapterView<?> parent, View view, int position, long id) {
-                String deviceInfo = discoveredDevicesList.get(position);
-                // Pour l'instant, on affiche juste un Toast avec l'information de l'appareil cliqué.
-                // Plus tard, on pourra extraire l'adresse MAC et lancer la connexion.
-                Toast.makeText(MainActivity.this, "Appareil sélectionné : " + deviceInfo, Toast.LENGTH_SHORT).show();
-                Log.d("BluetoothGATT", "Appareil cliqué : " + deviceInfo);
+                // Arrêter le scan si il est en cours
+                if (scanning) {
+                    scanLeDevice(); // Appeler scanLeDevice() une fois pour l'arrêter
+                }
 
-                // Exemple de ce qu'on fera plus tard :
-                // String deviceAddress = deviceInfo.substring(deviceInfo.lastIndexOf("\n") + 1);
-                // BluetoothDevice device = bluetoothAdapter.getRemoteDevice(deviceAddress);
-                // connectToDevice(device);
+                String deviceInfo = discoveredDevicesList.get(position);
+                if (deviceInfo == null) return;
+
+                // Extraire l'adresse MAC de la chaîne (qui est sur la deuxième ligne)
+                String deviceAddress = deviceInfo.substring(deviceInfo.lastIndexOf("\n") + 1);
+                Log.d("BluetoothGATT", "Adresse de l'appareil sélectionné : " + deviceAddress);
+
+                Toast.makeText(MainActivity.this, "Connexion à " + deviceAddress, Toast.LENGTH_SHORT).show();
+
+                // Obtenir l'objet BluetoothDevice
+                BluetoothDevice device = bluetoothAdapter.getRemoteDevice(deviceAddress);
+
+                // Se connecter au serveur GATT de l'appareil
+                // Le troisième paramètre est le BluetoothGattCallback qui gérera les événements de connexion
+                if (ActivityCompat.checkSelfPermission(MainActivity.this, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+                    // Cette vérification est nécessaire pour satisfaire le linter,
+                    // même si les permissions sont déjà gérées par checkAndRequestPermissions().
+                    return;
+                }
+                bluetoothGatt = device.connectGatt(MainActivity.this, false, gattCallback);
             }
         });
 
@@ -119,6 +135,33 @@ public class MainActivity extends AppCompatActivity {
             }
         });
     }
+
+    private final BluetoothGattCallback gattCallback = new BluetoothGattCallback() {
+        @Override
+        public void onConnectionStateChange(BluetoothGatt gatt, int status, int newState) {
+            String deviceAddress = gatt.getDevice().getAddress();
+            if (ActivityCompat.checkSelfPermission(MainActivity.this, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+                return;
+            }
+
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                if (newState == BluetoothProfile.STATE_CONNECTED) {
+                    Log.d("BluetoothGATT", "Connecté avec succès à l'appareil : " + deviceAddress);
+                    // La connexion est établie, on peut maintenant découvrir les services
+                    // gatt.discoverServices();
+                    runOnUiThread(() -> Toast.makeText(MainActivity.this, "Connecté à " + deviceAddress, Toast.LENGTH_SHORT).show());
+                } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                    Log.d("BluetoothGATT", "Déconnecté de l'appareil : " + deviceAddress);
+                    gatt.close();
+                    runOnUiThread(() -> Toast.makeText(MainActivity.this, "Déconnecté de " + deviceAddress, Toast.LENGTH_SHORT).show());
+                }
+            } else {
+                Log.e("BluetoothGATT", "Erreur de connexion GATT. Statut : " + status);
+                gatt.close();
+                runOnUiThread(() -> Toast.makeText(MainActivity.this, "Erreur de connexion GATT", Toast.LENGTH_SHORT).show());
+            }
+        }
+    };
 
     /**
      * Lance le processus d'activation du Bluetooth en vérifiant d'abord les permissions.
