@@ -41,11 +41,51 @@ import java.util.List;
 import android.bluetooth.BluetoothGatt;
 import android.bluetooth.BluetoothGattCallback;
 import android.bluetooth.BluetoothProfile;
+import java.util.UUID;
+import android.bluetooth.BluetoothGattCharacteristic;
+import android.bluetooth.BluetoothGattDescriptor;
+import android.bluetooth.BluetoothGattService;
 
 public class MainActivity extends AppCompatActivity {
 
     private static final int REQUEST_ENABLE_BT = 1;
     private static final int REQUEST_PERMISSIONS_CODE = 2;
+
+    // UUIDs pour le service de fréquence cardiaque (Heart Rate Service)
+    public final static UUID UUID_HEART_RATE_SERVICE = UUID.fromString("0000180d-0000-1000-8000-00805f9b34fb");
+    public final static UUID UUID_HEART_RATE_MEASUREMENT = UUID.fromString("00002a37-0000-1000-8000-00805f9b34fb");
+    // Callback pour les résultats du scan BLE
+    private final ScanCallback leScanCallback = new ScanCallback() {
+        @Override
+        public void onScanResult(int callbackType, ScanResult result) {
+            super.onScanResult(callbackType, result);
+            BluetoothDevice device = result.getDevice();
+            if (ActivityCompat.checkSelfPermission(MainActivity.this, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+                return;
+            }
+            String deviceName = device.getName();
+            String deviceAddress = device.getAddress();
+            String deviceInfo = (deviceName != null ? deviceName : "Appareil inconnu") + "\n" + deviceAddress;
+
+            // Éviter les doublons dans la liste
+            if (!discoveredDevicesList.contains(deviceInfo)) {
+                Log.d("BluetoothGATT", "Appareil trouvé: " + deviceInfo);
+                discoveredDevicesList.add(deviceInfo);
+                listAdapter.notifyDataSetChanged();
+            }
+        }
+
+        @Override
+        public void onScanFailed(int errorCode) {
+            super.onScanFailed(errorCode);
+            Log.e("BluetoothGATT", "Le scan BLE a échoué avec le code d'erreur: " + errorCode);
+            Toast.makeText(MainActivity.this, "Échec du scan BLE", Toast.LENGTH_SHORT).show();
+            scanning = false;
+        }
+    };
+
+    private BluetoothGattService gattService;
+    private BluetoothGattCharacteristic gattCharacteristic;
 
     private BluetoothAdapter bluetoothAdapter;
     private BluetoothLeAdvertiser bluetoothLeAdvertiser; // <-- NOUVEL ATTRIBUT
@@ -147,9 +187,12 @@ public class MainActivity extends AppCompatActivity {
             if (status == BluetoothGatt.GATT_SUCCESS) {
                 if (newState == BluetoothProfile.STATE_CONNECTED) {
                     Log.d("BluetoothGATT", "Connecté avec succès à l'appareil : " + deviceAddress);
-                    // La connexion est établie, on peut maintenant découvrir les services
-                    // gatt.discoverServices();
                     runOnUiThread(() -> Toast.makeText(MainActivity.this, "Connecté à " + deviceAddress, Toast.LENGTH_SHORT).show());
+
+                    // La connexion est établie, on lance la découverte des services.
+                    Log.d("BluetoothGATT", "Tentative de découverte des services...");
+                    gatt.discoverServices();
+
                 } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                     Log.d("BluetoothGATT", "Déconnecté de l'appareil : " + deviceAddress);
                     gatt.close();
@@ -161,7 +204,110 @@ public class MainActivity extends AppCompatActivity {
                 runOnUiThread(() -> Toast.makeText(MainActivity.this, "Erreur de connexion GATT", Toast.LENGTH_SHORT).show());
             }
         }
+
+        @Override
+        public void onServicesDiscovered(BluetoothGatt gatt, int status) {
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                Log.d("BluetoothGATT", "Services découverts avec succès.");
+
+                // 1. Récupérer le service qui nous intéresse (Heart Rate Service)
+                gattService = gatt.getService(UUID_HEART_RATE_SERVICE);
+
+                if (gattService != null) {
+                    Log.d("BluetoothGATT", "Service de fréquence cardiaque trouvé.");
+                    runOnUiThread(() -> Toast.makeText(MainActivity.this, "Service HR trouvé !", Toast.LENGTH_SHORT).show());
+
+                    // 2. Récupérer la caractéristique qui nous intéresse (Heart Rate Measurement)
+                    gattCharacteristic = gattService.getCharacteristic(UUID_HEART_RATE_MEASUREMENT);
+
+                    if (gattCharacteristic != null) {
+                        Log.d("BluetoothGATT", "Caractéristique de mesure de fréquence cardiaque trouvée.");
+
+                        // 3. Activer les notifications pour cette caractéristique
+                        if (ActivityCompat.checkSelfPermission(MainActivity.this, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+                            return;
+                        }
+                        gatt.setCharacteristicNotification(gattCharacteristic, true);
+
+                        // 4. Écrire sur le descripteur pour activer les notifications côté serveur
+                        // C'est une étape standard et obligatoire pour que les notifications fonctionnent.
+                        UUID cccdUuid = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb");
+                        BluetoothGattDescriptor descriptor = gattCharacteristic.getDescriptor(cccdUuid);
+                        if (descriptor != null) {
+                            descriptor.setValue(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE);
+                            gatt.writeDescriptor(descriptor);
+                            Log.d("BluetoothGATT", "Notifications activées pour la caractéristique HR.");
+                        } else {
+                            Log.e("BluetoothGATT", "Descripteur CCCD non trouvé !");
+                        }
+                    } else {
+                        Log.e("BluetoothGATT", "Caractéristique de mesure de fréquence cardiaque non trouvée.");
+                    }
+                } else {
+                    Log.e("BluetoothGATT", "Service de fréquence cardiaque non trouvé.");
+                    runOnUiThread(() -> Toast.makeText(MainActivity.this, "Service HR non trouvé sur cet appareil.", Toast.LENGTH_LONG).show());
+                }
+            } else {
+                Log.w("BluetoothGATT", "onServicesDiscovered a reçu un statut d'erreur: " + status);
+            }
+        }
+
+        @Override
+        public void onDescriptorWrite(BluetoothGatt gatt, BluetoothGattDescriptor descriptor, int status) {
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                Log.d("BluetoothGATT", "Descripteur écrit avec succès. Prêt à recevoir des notifications.");
+                runOnUiThread(() -> Toast.makeText(MainActivity.this, "Notifications activées !", Toast.LENGTH_SHORT).show());
+            } else {
+                Log.e("BluetoothGATT", "Échec de l'écriture du descripteur, statut : " + status);
+            }
+        }
+
+        @Override
+        public void onCharacteristicChanged(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic) {
+            // Cette méthode est appelée à chaque nouvelle notification du serveur.
+            // On vérifie que la notification vient bien de la caractéristique que l'on attend.
+            if (UUID_HEART_RATE_MEASUREMENT.equals(characteristic.getUuid())) {
+                // La valeur est un tableau de bytes (byte[]).
+                byte[] data = characteristic.getValue();
+                // On décode la valeur en suivant la spécification du service Heart Rate.
+                int heartRate = parseHeartRateValue(data);
+
+                Log.d("BluetoothGATT", "Nouvelle mesure de fréquence cardiaque reçue : " + heartRate);
+
+                // Mettre à jour l'interface utilisateur sur le thread principal.
+                runOnUiThread(() -> {
+                    // Pour l'exemple, on affiche la valeur dans un Toast.
+                    // Dans une vraie application, on mettrait à jour un TextView.
+                    Toast.makeText(MainActivity.this, "BPM : " + heartRate, Toast.LENGTH_SHORT).show();
+                });
+            }
+        }
     };
+
+    /**
+     * Décode la valeur brute reçue de la caractéristique Heart Rate Measurement.
+     * La spécification est disponible sur le site du Bluetooth SIG.
+     * @param data Le tableau de bytes reçu.
+     * @return La valeur de la fréquence cardiaque en BPM.
+     */
+    private int parseHeartRateValue(byte[] data) {
+        if (data == null || data.length == 0) {
+            return 0;
+        }
+
+        // Le premier byte contient des flags.
+        int flags = data[0];
+        // Le format de la valeur de la fréquence cardiaque (UINT8 ou UINT16) est déterminé par le bit 0 du flag.
+        boolean is16BitFormat = (flags & 0x01) != 0;
+
+        if (is16BitFormat) {
+            // La valeur est sur 2 bytes (Little Endian).
+            return (data[2] & 0xFF) << 8 | (data[1] & 0xFF);
+        } else {
+            // La valeur est sur 1 byte.
+            return data[1] & 0xFF;
+        }
+    }
 
     /**
      * Lance le processus d'activation du Bluetooth en vérifiant d'abord les permissions.
@@ -221,36 +367,6 @@ public class MainActivity extends AppCompatActivity {
             bluetoothLeScanner.stopScan(leScanCallback);
         }
     }
-
-    // Callback pour les résultats du scan BLE
-    private final ScanCallback leScanCallback = new ScanCallback() {
-        @Override
-        public void onScanResult(int callbackType, ScanResult result) {
-            super.onScanResult(callbackType, result);
-            BluetoothDevice device = result.getDevice();
-            if (ActivityCompat.checkSelfPermission(MainActivity.this, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
-                return;
-            }
-            String deviceName = device.getName();
-            String deviceAddress = device.getAddress();
-            String deviceInfo = (deviceName != null ? deviceName : "Appareil inconnu") + "\n" + deviceAddress;
-
-            // Éviter les doublons dans la liste
-            if (!discoveredDevicesList.contains(deviceInfo)) {
-                Log.d("BluetoothGATT", "Appareil trouvé: " + deviceInfo);
-                discoveredDevicesList.add(deviceInfo);
-                listAdapter.notifyDataSetChanged();
-            }
-        }
-
-        @Override
-        public void onScanFailed(int errorCode) {
-            super.onScanFailed(errorCode);
-            Log.e("BluetoothGATT", "Le scan BLE a échoué avec le code d'erreur: " + errorCode);
-            Toast.makeText(MainActivity.this, "Échec du scan BLE", Toast.LENGTH_SHORT).show();
-            scanning = false;
-        }
-    };
 
     /**
      * Vérifie les permissions Bluetooth nécessaires et les demande si elles ne sont pas accordées.
@@ -321,4 +437,6 @@ public class MainActivity extends AppCompatActivity {
             }
         }
     }
+
+
 }
